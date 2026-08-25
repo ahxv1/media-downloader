@@ -1,0 +1,287 @@
+INSTAGRAM: 3-ENGINE CHAIN (v3)
+==============================
+
+WHAT v3 FIXED
+-------------
+Symptom: a VIDEO link came back as a photo + a separate audio file.
+
+Cause: my yt-dlp engine returned EVERY file sitting in the download
+folder. When yt-dlp wrote a thumbnail (.jpg) and/or fetched the video
+and audio as two separate streams, all of those files were handed to
+upload_album(), which then sent the .jpg as a photo and the .m4a as
+audio. The video itself was often the file that got dropped.
+
+Fix, two parts:
+  1. The engine now uses the file paths yt-dlp ITSELF reports
+     (requested_downloads / entries), not a blind folder scan.
+  2. keep_playable_media() then filters them: if any real video file
+     is present, thumbnails and audio-only files are discarded. A
+     genuine photo post still returns its images, and an audio-only
+     link still returns its audio.
+  3. The format string now prefers ONE file that already contains
+     video AND audio, so no ffmpeg merge is needed and no stray audio
+     file is ever created. Sidecar thumbnails/json are disabled.
+
+Startup log tag is now "Build: instagram-engines v3".
+
+
+
+WHY v1 DID NOT WORK
+-------------------
+The error card you saw was:
+
+    Download failed.
+    Failed after 3 attempts: HTTP 401: Unauthorized
+
+That exact card is produced by ONE code path only: the one taken when
+the media-downloader library is NOT importable on the host. So on your
+hosting website the wheel did not install (or the old build was still
+running), the bot fell back to the original early-return, and the new
+engine never got a turn. Two separate problems:
+
+  1. The whole feature depended on a pip install succeeding. It didn't.
+  2. The 401 came from the METADATA step (parth-dl get_info), which
+     runs BEFORE any download. It returned early, so no engine ran.
+
+BOTH are fixed in v2.
+
+
+THE CHAIN NOW (Instagram only)
+------------------------------
+  1. media-downloader   <- the library you asked for, if installed
+  2. yt-dlp             <- ALWAYS present (core dependency of the bot)
+  3. parth-dl           <- the original downloader, unchanged
+
+Stage 2 is the important addition: yt-dlp is already required by this
+bot, so it can never fail to install. The chain no longer depends on
+an optional wheel. It also honours COOKIES_FILE, which is the only
+real cure for Instagram's 401.
+
+The metadata lookup can no longer end the download. A 401 there is
+logged once and the engines still run.
+
+
+WHAT THE USER SEES
+------------------
+  Checking Instagram...                    (unchanged spinner)
+  Downloading Instagram...
+  Engine: media-downloader                 (or yt-dlp)
+  [progress bar] 47.0%
+
+On a failure, before each retry:
+
+        Download error
+
+        The media-downloader engine could not finish
+        this download.
+
+        Reason
+        HTTP 401: Unauthorized
+
+        ---------------
+
+        Retrying automatically...
+
+        Backup engine: yt-dlp
+
+        Please wait - no need to send the link again.
+
+Then the same card again for yt-dlp -> parth-dl if needed. If all
+three fail, the existing red error card lists what each engine said.
+
+
+CONSOLE NO LONGER REPEATS ITSELF
+--------------------------------
+New log_once() helper: an identical message is printed only the FIRST
+time it occurs. Previously "HTTP 401: Unauthorized" was printed by the
+metadata step, by each engine, and again on every retry and every link.
+Now you see it once. Applied to the metadata failure and to both engine
+failures.
+
+
+HOW TO CONFIRM THE NEW BUILD IS ACTUALLY DEPLOYED
+-------------------------------------------------
+The startup log now prints a build tag. Look for these lines:
+
+    Build: instagram-engines v3
+    Instagram engines: 1) media-downloader  ->  2) yt-dlp  ->  3) parth-dl
+
+If you do NOT see "Build: instagram-engines v3", the host is still
+running the old code - redeploy / restart it.
+
+If media-downloader failed to install you will instead see:
+
+    Instagram engines: 1) yt-dlp  ->  2) parth-dl
+       note: 'media-downloader' is not installed here -> <the reason>
+
+That line tells you exactly why the wheel is missing. The bot keeps
+working regardless.
+
+
+STILL 401 ON EVERYTHING? (read this)
+------------------------------------
+All three engines fetch from Instagram, so if Instagram refuses your
+host's datacenter IP outright, all three get 401. No library can fix
+that - it is an IP/session block, not a code bug. The fix:
+
+  1. Log into Instagram in a browser (use a THROWAWAY account).
+  2. Export cookies with a "Get cookies.txt" browser extension.
+  3. Upload cookies.txt next to main.py.
+  4. Set the env var:  COOKIES_FILE=/app/cookies.txt
+  5. Restart. yt-dlp then downloads as a logged-in user.
+
+Cookies expire, so refresh them if 401 returns. The startup log prints
+a reminder when COOKIES_FILE is not set.
+
+
+NOTHING WAS DELETED
+-------------------
+get_instagram_media(), instagram_progress_hook(), make_progress_bar(),
+the spinner, admin panel, subscription gate, albums, and all TikTok /
+X-Twitter code are unchanged. parth-dl is still in requirements.txt and
+is still used as the final fail-safe.
+
+============================================================
+WHAT v4 ADDED
+============================================================
+
+The Instagram fail-safe chain is now used for TikTok and
+X / Twitter videos too, via download_media_with_failsafe().
+
+  Instagram   : media-downloader -> yt-dlp -> parth-dl
+  TikTok      : media-downloader -> yt-dlp
+  X / Twitter : media-downloader -> yt-dlp
+
+parth-dl is Instagram-only, so it is not part of the TikTok
+or X chains.
+
+The retry card is the exact same UI. Only the platform name
+changes, taken from the link that was sent:
+
+  PLATFORM_LABELS = instagram -> Instagram
+                    tiktok    -> TikTok
+                    twitter   -> X / Twitter
+                    anything else -> Media
+
+keep_playable_media() is applied to the primary engine on all
+platforms, so a video link can never arrive as a thumbnail
+plus a separate audio file (the v3 bug).
+
+The yt-dlp stage still calls the original download_social_media()
+unchanged, so TikTok slideshows behave exactly as before.
+
+============================================================
+WHAT v5 FIXED
+============================================================
+
+Symptom: video played on Telegram Desktop but showed as a
+frozen picture with audio on the phone apps.
+
+Cause: Instagram/TikTok/X now serve AV1 and VP9. Desktop
+decodes those in software; phones use a hardware decoder that
+does not support them, so only the first frame appeared.
+
+Fix (main.py):
+  - probe_media()                  -> ffprobe codecs + w/h/duration
+  - normalize_video_for_telegram() -> H.264 High + AAC when the
+    codec is not phone-safe, otherwise a plain remux
+  - both paths add -movflags +faststart
+  - send_video() and InputMediaVideo() now receive real width,
+    height and duration (Telegram needs these to stream)
+  - yt-dlp format strings now ask for vcodec^=avc1 FIRST, so
+    most downloads need no re-encode at all
+
+Safety: if ffprobe/ffmpeg are unavailable or the conversion
+fails, the ORIGINAL file is uploaded unchanged. The temp
+converted file is always deleted after upload.
+
+Verified with real ffmpeg: VP9+Opus -> h264/High/yuv420p +
+aac, 641x361 -> 640x360 (even dims), moov before mdat on both
+the transcode and the remux path.
+
+============================================================
+WHAT v6 FIXED
+============================================================
+
+v5 was WRONG about the cause. It only converted a video when
+the codec NAME was not h264. But these are all "h264" too and
+phones still cannot decode them:
+
+  - 10-bit H.264  (High 10 / yuv420p10le)   <- most common
+  - High 4:2:2 / 4:4:4 profiles
+  - 50-60 fps
+  - 1080p and larger
+
+So those files were passed through untouched and still showed
+as a still image with sound on mobile.
+
+v6 stops guessing. normalize_video_for_telegram() now ALWAYS
+re-encodes, to one conservative profile:
+
+  H.264 Main / level 4.0 / yuv420p (8-bit)
+  long side capped at 1280, dimensions forced even
+  frame rate capped at 30 fps  (-fpsmax 30)
+  AAC 128k stereo 44100 Hz
+  MP4 + -movflags +faststart
+
+Three fallback levels, so a download is never lost:
+  1) full conversion
+  2) same without -fpsmax (older ffmpeg builds)
+  3) plain remux (-c copy +faststart)
+  4) if all fail -> upload the ORIGINAL file untouched
+
+Applies to Instagram, TikTok and X, single videos AND albums.
+
+Verified against the real shipped function: a 10-bit h264
+1080x1920 60fps source came out h264 / Main / yuv420p /
+720x1280 / 30fps / aac, moov before mdat.
+
+STARTUP LOG TRIMMED
+-------------------
+Removed from normal startup: the build banner, the Instagram /
+TikTok / X engine lists, the media-downloader note and the
+COOKIES_FILE tip. Only the ffmpeg lines and the "running" line
+are printed now. DEBUG_LOGS=1 brings the details back.
+
+============================================================
+WHAT v7 FIXED (READ THIS BEFORE TOUCHING VIDEO UPLOADS)
+============================================================
+
+v5 and v6 were the WRONG diagnosis. Proof: the old
+ffmpeg_fixed build plays fine on phones, and it does NOT
+convert anything and does NOT declare any metadata.
+
+The real cause of "still image + audio on phone":
+
+  1. width= / height= / duration= were passed to
+     bot.send_video() and types.InputMediaVideo().
+     Telegram uses the values IT is given instead of probing
+     the file. Desktop plays anyway; mobile does not.
+
+  2. Codec filters in the yt-dlp format string
+     (vcodec^=avc1, acodec^=mp4a, ext=mp4) made yt-dlp pick a
+     different rendition than the working build did.
+
+v7 restores both to the exact working form:
+
+  format = bestvideo[height<=720]+bestaudio
+           /best[height<=720]/best
+  merge_output_format = mp4
+
+  bot.send_video(chat_id, video, caption=..., parse_mode=HTML,
+                 supports_streaming=True, timeout=...)
+  types.InputMediaVideo(content, caption=..., parse_mode=...,
+                        supports_streaming=True)
+
+DO NOT re-add width/height/duration/thumb to those calls.
+DO NOT add codec filters to the format string.
+Either one brings the phone bug straight back.
+
+probe_media() and normalize_video_for_telegram() are KEPT but
+are no longer called by default. They only run if you set:
+
+    FORCE_VIDEO_CONVERT=1
+
+Everything else is untouched: media-downloader -> yt-dlp ->
+parth-dl fail-safe chain for Instagram/TikTok/X, retry cards,
+progress bars, albums, quiet console, trimmed startup log.

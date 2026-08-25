@@ -1,0 +1,23 @@
+pyTelegramBotAPI
+yt-dlp
+requests
+python-dotenv
+
+# ------------------------------------------------------------
+# INSTAGRAM ENGINES
+# ------------------------------------------------------------
+# PRIMARY engine for Instagram (https://knuckles-team.github.io/media-downloader/)
+media-downloader
+
+# FAIL-SAFE engine, still used for Instagram when the primary one
+# errors, and unchanged for everything else. Do not remove.
+parth-dl
+
+# ------------------------------------------------------------
+# FFMPEG WITHOUT INSTALLING ANYTHING ON THE HOST
+# ------------------------------------------------------------
+# This wheel ALREADY CONTAINS the ffmpeg executable, so it arrives
+# during the host's normal "pip install -r requirements.txt" build
+# step. There is no separate ffmpeg download at runtime that the host
+# could kill, and the build cache keeps it between deploys.
+imageio-ffmpeg
