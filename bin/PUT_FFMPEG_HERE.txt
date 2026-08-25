@@ -1,0 +1,19 @@
+OPTIONAL FOLDER
+===============
+
+You normally do NOT need to touch this folder.
+
+ffmpeg is provided automatically, in this order:
+
+  1. FFMPEG_LOCATION environment variable
+  2. ffmpeg already installed on the host (Docker, apt, VPS)
+  3. binaries placed in THIS folder
+  4. the "imageio-ffmpeg" pip wheel, which already contains ffmpeg and
+     is installed during the normal pip build step
+  5. a resumable static download (only if 1-4 all fail)
+
+Use this folder only if you want to pin your own build: drop the
+"ffmpeg" (and optionally "ffprobe") binary right here, next to this
+file, and the bot will pick it up on the next start. On Linux hosts the
+binary must be a static Linux x86_64 build; the bot makes it executable
+by itself, so you do not need to run chmod.
